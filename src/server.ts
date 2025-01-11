@@ -571,8 +571,10 @@ export class DocumentationServer {
         await this.fsManager.saveSources(this.docs);
         console.error('Default docs saved successfully');
       } else {
+        console.error('\nUsing existing docs');
+        console.error('Categories:', [...new Set(savedDocs.map(d => d.category))]);
+        console.error('Docs:', JSON.stringify(savedDocs, null, 2).slice(0, 200) + '...');
         this.docs = savedDocs;
-        console.error('Using existing documentation');
       }
 
       // Connect to transport
@@ -583,52 +585,6 @@ export class DocumentationServer {
           this.isLocal ? '[LOCAL VERSION]' : '[PRODUCTION VERSION]'
         }`
       );
-    } catch (error) {
-      console.error('[Fatal Error]', error);
-      throw error;
-    }
-  }
-
-  private async removeDocumentation(name: string) {
-    const index = this.docs.findIndex(doc => doc.name === name);
-    if (index === -1) {
-      throw new McpError(ErrorCode.InvalidRequest, `Documentation "${name}" not found`);
-    }
-
-    // Remove from memory and storage
-    this.docs.splice(index, 1);
-    await this.fsManager.saveSources(this.docs);
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Removed documentation: ${name}`,
-        },
-      ],
-    };
-  }
-}
-
-        this.docs = [...defaultDocs];
-        console.error('\nSaving default docs...');
-        try {
-          await this.fsManager.saveSources(this.docs);
-          console.error('Default docs saved successfully');
-        } catch (error) {
-          console.error('Failed to save default docs:', error);
-          if (error instanceof Error) {
-            console.error('Error details:', error.message);
-            console.error('Stack trace:', error.stack);
-          }
-          throw error;
-        }
-      } else {
-        console.error('\nUsing existing docs');
-        console.error('Categories:', [...new Set(savedDocs.map(d => d.category))]);
-        console.error('Docs:', JSON.stringify(savedDocs, null, 2).slice(0, 200) + '...');
-        this.docs = savedDocs;
-      }
     } catch (error) {
       console.error('\nError during initialization:', error);
       console.error('Error details:', error instanceof Error ? error.message : String(error));
@@ -641,25 +597,8 @@ export class DocumentationServer {
       await this.fsManager.saveSources(this.docs);
       console.error('Fallback docs saved');
     }
-
-    // Log initial state before starting server
-    console.error(
-      `\nInitial Documentation State ${this.isLocal ? '[LOCAL VERSION]' : '[PRODUCTION VERSION]'}:`
-    );
-    console.error(this.getInitialState());
-
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error(
-      `Documentation MCP server running on stdio ${
-        this.isLocal ? '[LOCAL VERSION]' : '[PRODUCTION VERSION]'
-      }`
-    );
   }
 
-  /**
-   * Removes documentation source
-   */
   private async removeDocumentation(name: string) {
     const index = this.docs.findIndex(doc => doc.name === name);
     if (index === -1) {
