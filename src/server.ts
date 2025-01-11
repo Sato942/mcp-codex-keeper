@@ -1,5 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { normalizeWindowsPath } from './utils/fs.js';
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -31,9 +32,30 @@ const ENV = {
 
 // Storage paths
 const STORAGE_PATHS = {
-  local: (modulePath: string) => path.join(modulePath, '..', ENV.storagePath),
-  production: () =>
-    path.join(process.env.HOME || process.env.USERPROFILE || '', '.mcp-codex-keeper'),
+  local: (modulePath: string) => {
+    const storagePath = path.join(path.dirname(modulePath), ENV.storagePath);
+    return process.platform === 'win32' 
+      ? normalizeWindowsPath(storagePath)
+      : storagePath;
+  },
+  production: () => {
+    let homePath;
+    if (process.platform === 'win32') {
+      // Windows: Try USERPROFILE, HOMEDRIVE + HOMEPATH, or fallback to temp directory
+      homePath = process.env.USERPROFILE ||
+                (process.env.HOMEDRIVE && process.env.HOMEPATH
+                  ? path.join(process.env.HOMEDRIVE, process.env.HOMEPATH)
+                  : process.env.TEMP || process.env.TMP || 'C:\\Temp');
+    } else {
+      // Unix: Try HOME, or fallback to /tmp
+      homePath = process.env.HOME || '/tmp';
+    }
+    
+    const storagePath = path.join(homePath, '.mcp-codex-keeper');
+    return process.platform === 'win32'
+      ? normalizeWindowsPath(storagePath)
+      : storagePath;
+  }
 };
 
 // Default documentation sources with best practices and essential references
@@ -99,99 +121,62 @@ const defaultDocs: DocSource[] = [
   },
 ];
 
-/**
- * Main server class for the documentation keeper
- */
 export class DocumentationServer {
   private server!: Server;
   private fsManager!: FileSystemManager;
   private docs: DocSource[] = [];
   private isLocal: boolean = ENV.isLocal;
 
-  constructor() {
-    this.init()
-      .then(() => this.run())
-      .catch(console.error);
-  }
-
-  private async init() {
-    // Use environment settings
+  constructor(
+    private readonly storagePath: string = '',
+    private readonly port: number = 3000
+  ) {
+    // Initialize basic properties
     this.isLocal = ENV.isLocal;
-    const serverName = this.isLocal ? 'local-mcp-codex-keeper' : 'aindreyway-mcp-codex-keeper';
-
-    // Get storage path based on mode
-    const moduleURL = new URL(import.meta.url);
-    const modulePath = path.dirname(moduleURL.pathname);
-    const storagePath = this.isLocal ? STORAGE_PATHS.local(modulePath) : STORAGE_PATHS.production();
-
-    // Create storage directory in production mode
-    if (!this.isLocal) {
-      try {
-        await fs.mkdir(storagePath, { recursive: true });
-        console.error('Created storage directory:', storagePath);
-      } catch (error) {
-        console.error('Failed to create storage directory:', error);
-      }
-    }
-
-    this.fsManager = new FileSystemManager(storagePath, {
-      maxSize: ENV.cacheMaxSize,
-      maxAge: ENV.cacheMaxAge,
-      cleanupInterval: ENV.cacheCleanupInterval,
-    });
-
-    this.server = new Server(
-      {
-        name: serverName,
-        version: '1.1.10',
-      },
-      {
-        capabilities: {
-          tools: {},
-          resources: {},
-        },
-      }
-    );
-
-    if (this.isLocal) {
-      console.error('\n' + '='.repeat(50));
-      console.error('🔧 RUNNING IN LOCAL DEVELOPMENT MODE');
-      console.error('Server name: local-codex-keeper');
-      console.error('Data directory: ' + path.join(modulePath, '..', ENV.storagePath));
-      console.error('To run production version use: npx @aindreyway/mcp-codex-keeper');
-      console.error('='.repeat(50) + '\n');
-    }
-
-    // Initialize with empty array, will be populated in run()
     this.docs = [];
-
-    this.setupToolHandlers();
-    this.setupResourceHandlers();
-    this.setupErrorHandlers();
-
-    // Log initial documentation state with version indicator
-    console.error(
-      `Available Documentation Categories ${
-        this.isLocal ? '[LOCAL VERSION]' : '[PRODUCTION VERSION]'
-      }:`
-    );
-    const categories = [...new Set(this.docs.map(doc => doc.category))];
-    categories.forEach(category => {
-      const docsInCategory = this.docs.filter(doc => doc.category === category);
-      console.error(`\n${category}:`);
-      docsInCategory.forEach(doc => {
-        console.error(`- ${doc.name}`);
-        console.error(`  ${doc.description}`);
-        console.error(`  Tags: ${doc.tags?.join(', ') || 'none'}`);
-      });
-    });
   }
 
-  /**
-   * Get initial documentation state
-   * This information will be available in the environment details
-   * when the server starts
-   */
+  private async init(): Promise<void> {
+    try {
+      // Initialize server
+      const serverName = this.isLocal ? 'local-mcp-codex-keeper' : 'aindreyway-mcp-codex-keeper';
+      this.server = new Server(
+        {
+          name: serverName,
+          version: '1.1.10',
+        },
+        {
+          capabilities: {
+            tools: {},
+            resources: {},
+          },
+        }
+      );
+
+      // Set up handlers
+      this.setupToolHandlers();
+      this.setupResourceHandlers();
+      this.setupErrorHandlers();
+
+      // Log initialization
+      if (this.isLocal) {
+        const currentDir = process.platform === 'win32'
+          ? normalizeWindowsPath(path.dirname(new URL(import.meta.url).pathname.slice(1)))
+          : path.dirname(new URL(import.meta.url).pathname);
+
+        console.error('\n' + '='.repeat(50));
+        console.error('🔧 RUNNING IN LOCAL DEVELOPMENT MODE');
+        console.error('Server name: local-codex-keeper');
+        console.error('Data directory: ' + path.join(currentDir, '..', ENV.storagePath));
+        console.error('To run production version use: npx @aindreyway/mcp-codex-keeper');
+        console.error('='.repeat(50) + '\n');
+      }
+    } catch (error) {
+      console.error('[Initialization Error]', error);
+      throw error;
+    }
+  }
+
   private getInitialState(): string {
     const categories = [...new Set(this.docs.map(doc => doc.category))];
     let state = 'Documentation Overview:\n\n';
@@ -212,9 +197,6 @@ export class DocumentationServer {
     return state;
   }
 
-  /**
-   * Sets up error handlers for the server
-   */
   private setupErrorHandlers(): void {
     this.server.onerror = (error: unknown) => {
       if (error instanceof FileSystemError) {
@@ -232,9 +214,6 @@ export class DocumentationServer {
     });
   }
 
-  /**
-   * Sets up tool handlers for the server
-   */
   private setupResourceHandlers(): void {
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
       resources: [
@@ -406,9 +385,6 @@ export class DocumentationServer {
     );
   }
 
-  /**
-   * Lists documentation sources with optional filtering
-   */
   private async listDocumentation(args: { category?: DocCategory; tag?: string }) {
     const { category, tag } = args;
     let filteredDocs = this.docs;
@@ -431,9 +407,6 @@ export class DocumentationServer {
     };
   }
 
-  /**
-   * Adds new documentation source
-   */
   private async addDocumentation(args: DocSource) {
     const { name, url, description, category, tags, version } = args;
 
@@ -473,9 +446,6 @@ export class DocumentationServer {
     };
   }
 
-  /**
-   * Updates documentation content from source
-   */
   private async updateDocumentation(args: { name: string; force?: boolean }) {
     const { name, force } = args;
     const doc = this.docs.find(d => d.name === name);
@@ -524,9 +494,6 @@ export class DocumentationServer {
     }
   }
 
-  /**
-   * Searches through documentation content
-   */
   private async searchDocumentation(args: { query: string; category?: DocCategory; tag?: string }) {
     const { query, category, tag } = args;
     let results = [];
@@ -572,26 +539,76 @@ export class DocumentationServer {
     }
   }
 
-  /**
-   * Starts the server
-   */
   async run() {
     console.error('\nStarting server...');
 
     try {
-      console.error('Ensuring directories...');
-      await this.fsManager.ensureDirectories();
-      console.error('Directories ensured');
+      // Initialize server and handlers
+      await this.init();
 
-      console.error('\nLoading documentation sources...');
+      // Initialize storage
+      const effectiveStoragePath = this.storagePath || (
+        this.isLocal 
+          ? STORAGE_PATHS.local(path.dirname(new URL(import.meta.url).pathname))
+          : STORAGE_PATHS.production()
+      );
+
+      // Initialize FileSystemManager
+      this.fsManager = new FileSystemManager(effectiveStoragePath, {
+        maxSize: ENV.cacheMaxSize,
+        maxAge: ENV.cacheMaxAge,
+        cleanupInterval: ENV.cacheCleanupInterval,
+      });
+
+      // Load or initialize documentation
+      console.error('Loading documentation sources...');
       const savedDocs = await this.fsManager.loadSources();
       console.error('Loaded docs:', savedDocs.length);
 
       if (savedDocs.length === 0) {
         console.error('\nFirst time setup - initializing with default documentation...');
-        console.error('Default docs count:', defaultDocs.length);
-        console.error('Default docs categories:', [...new Set(defaultDocs.map(d => d.category))]);
-        console.error('Default docs:', JSON.stringify(defaultDocs, null, 2).slice(0, 200) + '...');
+        this.docs = [...defaultDocs];
+        await this.fsManager.saveSources(this.docs);
+        console.error('Default docs saved successfully');
+      } else {
+        this.docs = savedDocs;
+        console.error('Using existing documentation');
+      }
+
+      // Connect to transport
+      const transport = new StdioServerTransport();
+      await this.server.connect(transport);
+      console.error(
+        `Documentation MCP server running on stdio ${
+          this.isLocal ? '[LOCAL VERSION]' : '[PRODUCTION VERSION]'
+        }`
+      );
+    } catch (error) {
+      console.error('[Fatal Error]', error);
+      throw error;
+    }
+  }
+
+  private async removeDocumentation(name: string) {
+    const index = this.docs.findIndex(doc => doc.name === name);
+    if (index === -1) {
+      throw new McpError(ErrorCode.InvalidRequest, `Documentation "${name}" not found`);
+    }
+
+    // Remove from memory and storage
+    this.docs.splice(index, 1);
+    await this.fsManager.saveSources(this.docs);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Removed documentation: ${name}`,
+        },
+      ],
+    };
+  }
+}
 
         this.docs = [...defaultDocs];
         console.error('\nSaving default docs...');

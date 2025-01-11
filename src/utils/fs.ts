@@ -6,6 +6,27 @@ import { Readable } from 'stream';
 import { DocSource } from '../types/index.js';
 
 /**
+ * Normalizes Windows paths to prevent double drive letter issues
+ * @param pathString - The path to normalize
+ * @returns Normalized path string
+ */
+export function normalizeWindowsPath(pathString: string): string {
+  // Handle file:// URLs first
+  if (pathString.startsWith('file://')) {
+    pathString = pathString.slice(7);
+  }
+  
+  // Remove leading slash if it exists with a drive letter
+  if (pathString.match(/^\/[A-Za-z]:/)) {
+    pathString = pathString.slice(1);
+  }
+  
+  // Normalize drive letter case and path separators
+  return pathString.replace(/^([A-Za-z]):/, (_, letter) => letter.toUpperCase() + ':')
+                  .replace(/\//g, '\\');
+}
+
+/**
  * Error thrown when file system operations fail
  */
 export class FileSystemError extends Error {
@@ -46,23 +67,50 @@ export class FileSystemManager {
       cleanupInterval: 60 * 60 * 1000, // 1 hour
     }
   ) {
-    // Ensure absolute path and decode URL-encoded characters
-    this.docsPath = decodeURIComponent(path.resolve(basePath));
-    this.sourcesFile = path.join(this.docsPath, 'sources.json');
-    this.cacheDir = path.join(this.docsPath, 'cache');
+    try {
+      // Handle empty or invalid base path
+      if (!basePath) {
+        throw new Error('Base path is required');
+      }
 
-    // Log paths for debugging
-    console.error('\nFileSystemManager paths:');
-    console.error('- Base path:', this.docsPath);
-    console.error('- Sources file:', this.sourcesFile);
-    console.error('- Cache directory:', this.cacheDir);
-    console.error('- Current working directory:', process.cwd());
+      // Normalize and validate the base path
+      let normalizedPath;
+      if (process.platform === 'win32') {
+        // Windows-specific path handling
+        normalizedPath = normalizeWindowsPath(decodeURIComponent(path.resolve(basePath)));
+        // Ensure valid Windows path
+        if (!/^[A-Za-z]:\\/.test(normalizedPath)) {
+          throw new Error('Invalid Windows path format');
+        }
+      } else {
+        normalizedPath = decodeURIComponent(path.resolve(basePath));
+      }
 
-    // Use provided cache configuration
-    this.cacheConfig = cacheConfig;
+      // Set paths using the normalized path
+      this.docsPath = normalizedPath;
+      this.sourcesFile = path.join(this.docsPath, 'sources.json');
+      this.cacheDir = path.join(this.docsPath, 'cache');
 
-    // Start cache cleanup timer
-    this.startCleanupTimer();
+      // Log paths for debugging
+      console.error('\nFileSystemManager paths:');
+      console.error('- Base path:', this.docsPath);
+      console.error('- Sources file:', this.sourcesFile);
+      console.error('- Cache directory:', this.cacheDir);
+      console.error('- Current working directory:', process.cwd());
+
+      // Use provided cache configuration with validation
+      this.cacheConfig = {
+        maxSize: Math.max(1024 * 1024, cacheConfig.maxSize), // Minimum 1MB
+        maxAge: Math.max(60 * 60 * 1000, cacheConfig.maxAge), // Minimum 1 hour
+        cleanupInterval: Math.max(5 * 60 * 1000, cacheConfig.cleanupInterval), // Minimum 5 minutes
+      };
+
+      // Start cache cleanup timer
+      this.startCleanupTimer();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new FileSystemError(`Failed to initialize FileSystemManager: ${message}`, error);
+    }
   }
 
   /**

@@ -8,7 +8,8 @@
     "mcp-codex-keeper": "build/index.js"
   },
   "scripts": {
-    "build": "tsc && chmod +x build/index.js",
+	"build": "tsc && node scripts/make-executable.js",
+    "build:windows": "tsc",
     "start": "cross-env NODE_OPTIONS='--max-old-space-size=256' npm_config_cache_max=1024000000 node build/index.js",
     "dev": "tsc -w",
     "prepublishOnly": "npm run build",
